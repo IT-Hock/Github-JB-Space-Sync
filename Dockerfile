@@ -26,7 +26,7 @@ ENV SPACE_DEFAULT_STATUS=""
 
 WORKDIR /usr/src/app
 COPY package*.json ./
-COPY templates/* ./templates
+COPY templates/ ./templates/
 
 # From builder get all js files
 COPY --from=builder /usr/src/app/*.js /usr/src/app/
