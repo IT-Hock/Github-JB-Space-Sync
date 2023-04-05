@@ -21,7 +21,10 @@ const SPACE_PROJECT = process.env['SPACE_PROJECT'] || ""
 const SPACE_TOKEN = process.env['SPACE_TOKEN'] || ""
 const SPACE_DEFAULT_STATUS = process.env['SPACE_DEFAULT_STATUS'] || ""
 
-const SPACE_ISSUE_TEMPLATE = fs.readFileSync('templates/issue.txt', 'utf8');
+let SPACE_ISSUE_TEMPLATE = "{{body}}\r"
+if (fs.existsSync('templates/issue.txt')) {
+    SPACE_ISSUE_TEMPLATE = fs.readFileSync('templates/issue.txt', 'utf8')
+}
 
 const server = Restify.createServer();
 new ErrorHandler(server);
