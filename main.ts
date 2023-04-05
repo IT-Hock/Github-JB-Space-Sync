@@ -1,70 +1,28 @@
 import * as Restify from "restify"
 import * as Crypto from "crypto"
 import * as Request from "request"
-import {ErrorHandler} from "./errors"
+import { ErrorHandler } from "./errors"
+import { Space, SpaceIssue } from "./space"
+import { GitHubWebhookIssuesEvent, GitHubWebhookPayload, toIssueTemplate } from "./github"
+import * as fs from "fs"
 
-require('dotenv').config()
+import * as DotEnv from "dotenv"
+import Log, { LogLevel } from "./log"
 
-type GithubWebRepository = {
-    id: number
-    name: string
-    full_name: string
-    private: boolean
-    git_url: string
-    ssh_url: string
-}
+DotEnv.config()
 
-type GitHubWebhookPayload = {
-    ref: string
-    repository: GithubWebRepository
-}
-
-type GitHubWebhookIssuesEvent = GitHubWebhookPayload & {
-    action: string
-    issue: {
-        number: number
-        title: string
-        body: string
-    }
-}
+let space: Space
 
 const WEBHOOK_SECRET = process.env['GITHUB_SECRET'] || ""
 
+const PORT = process.env['PORT'] || 2652
 const SPACE_URL = process.env['SPACE_URL'] || ""
 const SPACE_PROJECT = process.env['SPACE_PROJECT'] || ""
 const SPACE_TOKEN = process.env['SPACE_TOKEN'] || ""
+const SPACE_DEFAULT_STATUS = process.env['SPACE_DEFAULT_STATUS'] || ""
 
-function createSpaceIssue(title: string, description: string) : Promise<any> {
-    // Promise based
-    return new Promise((resolve, reject) => {
-        Request.post({
-            url: SPACE_URL + '/api/http/projects/id:' + SPACE_PROJECT + '/planning/issues',
-            headers: {
-                'Authorization': 'Bearer ' + SPACE_TOKEN,
-                'Accept': 'application/json',
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                "title": title,
-                "description": description,
-                "status": process.env['SPACE_DEFAULT_STATUS']
-            })
-        }, (err: any, res: any, body: any) => {
-            let jsonBody = JSON.parse(body)
-            if (res.statusCode != 200) {
-                reject(new Error("Creating issue was unsucessfull: " + JSON.stringify(jsonBody)))
-                return
-            }
+const SPACE_ISSUE_TEMPLATE = fs.readFileSync('templates/issue.txt', 'utf8');
 
-            //console.log(err)
-            //console.log(res)
-            //console.log(body)
-            resolve(jsonBody)
-        })
-    })
-}
-
-// Configure the server
 const server = Restify.createServer();
 new ErrorHandler(server);
 server.use(Restify.plugins.bodyParser())
@@ -74,10 +32,7 @@ server.post('/', async (req: Restify.Request, res: Restify.Response, next: Resti
     let signature = req.header('X-Hub-Signature')
     let event = req.header('X-GitHub-Event')
 
-    console.log("Got request!")
-
-    if (false) {
-        // Verify the signature
+    if (process.env['NODE_ENV'] === "production") {
         let hmac = Crypto.createHmac("sha1", WEBHOOK_SECRET)
         let calculatedSignature = "sha1=" + hmac.update(JSON.stringify(req.body)).digest("hex");
 
@@ -86,27 +41,68 @@ server.post('/', async (req: Restify.Request, res: Restify.Response, next: Resti
         }
     }
 
-    // Check if the event is a create issue event
-    if (event !== "issues") {
-        return res.send(200)
+    switch (event) {
+        case 'issues':
+            await handleIssuesEvent(res, body as GitHubWebhookIssuesEvent)
+            return
+        default:
+            res.send(200)
+            return
     }
-    
-    let issueEvent = req.body as GitHubWebhookIssuesEvent
+});
+
+async function handleIssuesEvent(res: Restify.Response, issueEvent: GitHubWebhookIssuesEvent) {
+    if (issueEvent === undefined) {
+        Log.instance.error("Issue event is undefined")
+        res.send(400)
+        return
+    }
+
     if (issueEvent.action !== "opened") {
-        return res.send(200)
+        Log.instance.debug("Ignoring issue event with action: " + issueEvent.action)
+        res.send(200)
+        return
     }
 
     let title = issueEvent.issue.title
-    let description = issueEvent.issue.body
+    let description = toIssueTemplate(SPACE_ISSUE_TEMPLATE, issueEvent)
 
-    let result = await createSpaceIssue(title, description)
-    if (!result.success) {
-        return res.send(500)
+    let issue = new SpaceIssue(title, description)
+    try{
+        await space.createIssue(issue)
+        res.send(200)
+    } catch (e) {
+        Log.instance.error("Error creating issue: " + e)
+        res.send(500)
     }
+}
 
-    res.send(200)
-});
+// Main function
+async function main() {
+    space = new Space(SPACE_URL, SPACE_PROJECT, SPACE_TOKEN, SPACE_DEFAULT_STATUS)
+    await space.init()
 
-server.listen(2652, function () {
-    console.log('%s listening at %s', server.name, server.url);
-});
+    Log.instance.debug("Space issue statuses: " + space.getIssueStatusList().map(
+        status => status.name + " (" + status.id + " - " + status.color + ") " + (status.id == SPACE_DEFAULT_STATUS ? "default" : "")
+    ).join(","))
+
+    // Start the server
+    server.listen(PORT, function () {
+        console.log('%s listening at %s', server.name, server.url);
+    });
+}
+
+if (process.env['LOG_LEVEL']) {
+    Log.instance.setLogLevel(parseInt(process.env['LOG_LEVEL']) as LogLevel)
+} else if (process.env['NODE_ENV'] === "production") {
+    Log.instance.setLogLevel(LogLevel.Info)
+} else {
+    Log.instance.setLogLevel(LogLevel.Debug)
+}
+
+Log.instance.info("Starting server...")
+
+main().catch(err => {
+    console.error(err)
+    process.exit(1)
+})
