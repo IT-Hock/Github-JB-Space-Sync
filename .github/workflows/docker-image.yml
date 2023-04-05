@@ -17,7 +17,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: dominich/github-space-sync
+  IMAGE_NAME: ${{ github.repository }}
 
 
 jobs:
